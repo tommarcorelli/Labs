@@ -1242,7 +1242,11 @@ function initMobileNav() {
   const mobileSearchBtn = document.getElementById('btn-mobile-search');
 
   if (burger && navLinks) {
-    burger.addEventListener('click', () => {
+    burger.addEventListener('click', (e) => {
+      // Empêche le clic de remonter jusqu'au handler `document` ci-dessous :
+      // burger.innerHTML est réécrit juste après, ce qui détache le nœud cliqué
+      // et ferait refermer le menu instantanément.
+      e.stopPropagation();
       const open = navLinks.classList.toggle('mobile-open');
       burger.setAttribute('aria-expanded', open);
       burger.innerHTML = open

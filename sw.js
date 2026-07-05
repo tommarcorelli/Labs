@@ -6,7 +6,7 @@
    Incrémenter CACHE_NAME à chaque mise à jour du site.
    ============================================================ */
 
-const CACHE_NAME = 'tp-labs-v4';
+const CACHE_NAME = 'tp-labs-v5';
 const CACHE_ASSETS = [
   './',
   './index.html',

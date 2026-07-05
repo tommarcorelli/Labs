@@ -140,6 +140,7 @@ a:hover { text-decoration: underline; }
 }
 
 .logo-bolt {
+  color: var(--accent);
   fill: var(--accent);
   filter: drop-shadow(0 0 4px rgba(245,158,11,0.9))
           drop-shadow(0 0 10px rgba(245,158,11,0.55))
@@ -1728,8 +1729,10 @@ a:hover { text-decoration: underline; }
   .btn-burger { display: flex; }
   .nav-search-btn { display: flex; }
   .nav-search { display: none; }
+  /* !important : le label Import porte un style="display:flex" inline
+     qui, sinon, l'emporte sur ce display:none et le laisse coincé dans la nav. */
   .nav-actions label[title="Importer des labs JSON"],
-  .nav-actions #btn-export { display: none; }
+  .nav-actions #btn-export { display: none !important; }
 
   .nav-links {
     display: none;
