@@ -2,7 +2,8 @@
   "name": "TP & Labs IT",
   "short_name": "TP Labs",
   "description": "Gérer et suivre tes travaux pratiques informatiques — labs pas à pas, commandes prêtes à copier.",
-  "start_url": "/index.html",
+  "start_url": "./index.html",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#0F0E0C",
   "theme_color": "#0F0E0C",
@@ -28,7 +29,7 @@
       "name": "Labs",
       "short_name": "Labs",
       "description": "Accéder à la liste des labs",
-      "url": "/labs.html",
+      "url": "./labs.html",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     }
   ]
