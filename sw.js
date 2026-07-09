@@ -6,7 +6,7 @@
    Incrémenter CACHE_NAME à chaque mise à jour du site.
    ============================================================ */
 
-const CACHE_NAME = 'tp-labs-v6';
+const CACHE_NAME = 'tp-labs-v7';
 const CACHE_ASSETS = [
   './',
   './index.html',
@@ -14,16 +14,16 @@ const CACHE_ASSETS = [
   './style.css',
   './script.js',
   './manifest.json',
-  './data-index.js',
-  './data-automatisation.js',
-  './data-projets.js',
-  './data-reseau.js',
-  './data-sauvegardes.js',
-  './data-securite.js',
-  './data-slam.js',
-  './data-supervision.js',
-  './data-systemes.js',
-  './data-virtualisation.js',
+  './data/data-index.js',
+  './data/data-automatisation.js',
+  './data/data-projets.js',
+  './data/data-reseau.js',
+  './data/data-sauvegardes.js',
+  './data/data-securite.js',
+  './data/data-slam.js',
+  './data/data-supervision.js',
+  './data/data-systemes.js',
+  './data/data-virtualisation.js',
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];
