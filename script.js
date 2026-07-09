@@ -3,9 +3,53 @@
    Navigation, thème, animations, search, détail, checklist
    ============================================================ */
 
+/* ─────────────────────────────────────────
+   LOCALSTORAGE — accès sécurisés
+   (évite un crash total si le storage est
+   corrompu, plein, ou indisponible)
+───────────────────────────────────────── */
+function safeGetJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeSetJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    console.warn(`Impossible d'enregistrer "${key}" (storage plein ou indisponible)`);
+    return false;
+  }
+}
+
+function safeGet(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* ── État global ── */
 const State = {
-  theme: localStorage.getItem('theme') || 'dark',
+  theme: safeGet('theme', 'dark'),
   filters: {
     categories: [],
     niveau: '',
@@ -18,10 +62,47 @@ const State = {
   searchQuery: '',
   searchActiveIdx: -1,
   openLabId: null,
-  progress: JSON.parse(localStorage.getItem('tp-progress') || '{}'),
-  favorites: JSON.parse(localStorage.getItem('tp-favorites') || '[]'),
-  notes: JSON.parse(localStorage.getItem('tp-notes') || '{}')
+  progress: safeGetJSON('tp-progress', {}),
+  favorites: safeGetJSON('tp-favorites', []),
+  notes: safeGetJSON('tp-notes', {})
 };
+
+/* ─────────────────────────────────────────
+   LABS IMPORTÉS — persistance
+   Fusionne les labs importés (sauvegardés en
+   localStorage) avec les labs statiques dès
+   que data-index.js a défini window.LABS.
+───────────────────────────────────────── */
+(function mergeImportedLabs() {
+  const imported = safeGetJSON('tp-imported-labs', []);
+  if (Array.isArray(imported) && imported.length && Array.isArray(window.LABS)) {
+    window.LABS = [...window.LABS, ...imported];
+  }
+})();
+
+/* ─────────────────────────────────────────
+   MIGRATION — anciennes progressions
+   Avant ce correctif, la checklist était
+   sauvegardée par INDEX (ex: [0,2,3]). C'est
+   fragile : si l'ordre de la checklist change
+   dans les données, la progression enregistrée
+   ne correspond plus aux bons items.
+   On migre vers un stockage par TEXTE de l'item,
+   stable même si la checklist est réordonnée.
+───────────────────────────────────────── */
+(function migrateProgressFormat() {
+  if (!Array.isArray(window.LABS) || !window.LABS.length) return;
+  let changed = false;
+  Object.keys(State.progress).forEach(labIdKey => {
+    const lab = window.LABS.find(l => String(l.id) === String(labIdKey));
+    const p = State.progress[labIdKey];
+    if (lab && p && Array.isArray(p.checked) && p.checked.length && typeof p.checked[0] === 'number') {
+      p.checked = p.checked.map(i => lab.checklist[i]).filter(t => t !== undefined);
+      changed = true;
+    }
+  });
+  if (changed) safeSetJSON('tp-progress', State.progress);
+})();
 
 /* ─────────────────────────────────────────
    FAVORIS · NOTES · STATUT
@@ -35,7 +116,7 @@ function toggleFavorite(id) {
   let added;
   if (idx === -1) { State.favorites.push(id); added = true; }
   else { State.favorites.splice(idx, 1); added = false; }
-  localStorage.setItem('tp-favorites', JSON.stringify(State.favorites));
+  safeSetJSON('tp-favorites', State.favorites);
   showToast(added ? '⭐ Ajouté aux favoris' : '☆ Retiré des favoris', '#F59E0B');
   return added;
 }
@@ -54,7 +135,7 @@ function getNote(id) {
 function saveNote(id, text) {
   if (text && text.trim()) State.notes[id] = text;
   else delete State.notes[id];
-  localStorage.setItem('tp-notes', JSON.stringify(State.notes));
+  safeSetJSON('tp-notes', State.notes);
 }
 
 function hasNote(id) {
@@ -67,7 +148,7 @@ function hasNote(id) {
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   State.theme = theme;
-  localStorage.setItem('theme', theme);
+  safeSet('theme', theme);
   document.querySelectorAll('.btn-theme').forEach(btn => {
     btn.textContent = theme === 'dark' ? '☀️' : '🌙';
     btn.setAttribute('aria-label', theme === 'dark' ? 'Passer en mode jour' : 'Passer en mode nuit');
@@ -176,19 +257,30 @@ function isLabComplete(labId) {
   const lab = (window.LABS || []).find(l => l.id === labId);
   if (!lab) return false;
   const p = getProgress(labId);
-  return p.checked.length === lab.checklist.length;
+  // On ne compte que les entrées qui correspondent encore à un item
+  // existant de la checklist (texte), pour rester robuste si la
+  // checklist a été modifiée depuis la dernière visite.
+  const validChecked = p.checked.filter(c => lab.checklist.includes(c));
+  return lab.checklist.length > 0 && validChecked.length === lab.checklist.length;
 }
 
 function saveProgress(labId, checked) {
   State.progress[labId] = { checked };
-  localStorage.setItem('tp-progress', JSON.stringify(State.progress));
+  safeSetJSON('tp-progress', State.progress);
+}
+
+function getValidChecked(lab, labId) {
+  if (!lab) return [];
+  const p = getProgress(labId);
+  return p.checked.filter(c => lab.checklist.includes(c));
 }
 
 function getProgressPct(labId) {
   const lab = (window.LABS || []).find(l => l.id === labId);
   if (!lab || !lab.checklist.length) return 0;
   const p = getProgress(labId);
-  return Math.round((p.checked.length / lab.checklist.length) * 100);
+  const validChecked = p.checked.filter(c => lab.checklist.includes(c));
+  return Math.round((validChecked.length / lab.checklist.length) * 100);
 }
 
 /* ─────────────────────────────────────────
@@ -198,6 +290,7 @@ function renderCatGrid(container) {
   if (!container || !window.CATEGORIES || !window.LABS) return;
 
   container.innerHTML = '';
+  const fragment = document.createDocumentFragment();
   Object.entries(window.CATEGORIES).forEach(([slug, cat]) => {
     const count = window.LABS.filter(l => l.categorie === slug).length;
     const a = document.createElement('a');
@@ -217,8 +310,9 @@ function renderCatGrid(container) {
         window.location.href = `labs.html?cat=${slug}`;
       }
     });
-    container.appendChild(a);
+    fragment.appendChild(a);
   });
+  container.appendChild(fragment);
 }
 
 /* ─────────────────────────────────────────
@@ -228,7 +322,7 @@ function renderLabCard(lab) {
   const cat = (window.CATEGORIES || {})[lab.categorie] || { couleur: '#F59E0B', icone: '📋', label: lab.categorie };
   const p = getProgress(lab.id);
   const total = lab.checklist.length;
-  const done = p.checked.length;
+  const done = getValidChecked(lab, lab.id).length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const complete = isLabComplete(lab.id);
 
@@ -249,8 +343,8 @@ function renderLabCard(lab) {
         <button class="btn-fav ${fav ? 'active' : ''}" aria-label="${fav ? 'Retirer des favoris' : 'Ajouter aux favoris'}" title="Favori">${fav ? '★' : '☆'}</button>
       </div>
     </div>
-    <div class="lab-title">${hasNote(lab.id) ? '<span class="note-dot" title="Tu as des notes sur ce lab">📝</span> ' : ''}${lab.titre}</div>
-    <div class="lab-desc">${lab.description}</div>
+    <div class="lab-title">${hasNote(lab.id) ? '<span class="note-dot" title="Tu as des notes sur ce lab">📝</span> ' : ''}${escapeHtml(lab.titre)}</div>
+    <div class="lab-desc">${escapeHtml(lab.description)}</div>
     <div class="lab-meta">
       <span>${niveauEmoji} ${lab.niveau}</span>
       <span>⏱ ${lab.duree} min</span>
@@ -262,9 +356,9 @@ function renderLabCard(lab) {
     <div class="lab-progress-label">${done}/${total} validés</div>
     <div class="lab-card-footer">
       <div class="tags-list">
-        ${lab.tags.slice(0, 3).map(t => `<span class="tag" data-tag="${t}">${t}</span>`).join('')}
+        ${lab.tags.slice(0, 3).map(t => `<span class="tag" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('')}
       </div>
-      <button class="btn-open" aria-label="Ouvrir le lab ${lab.titre}">
+      <button class="btn-open" aria-label="Ouvrir le lab ${escapeHtml(lab.titre)}">
         Ouvrir →
       </button>
     </div>
@@ -304,8 +398,7 @@ function renderRecentLabs(container) {
 
   // Labs en cours (progression > 0 mais pas terminés) en premier, puis les 3 derniers ajoutés
   const inProgress = window.LABS.filter(l => {
-    const p = getProgress(l.id);
-    return p.checked.length > 0 && !isLabComplete(l.id);
+    return getValidChecked(l, l.id).length > 0 && !isLabComplete(l.id);
   });
   const recent = [...inProgress, ...window.LABS.slice(-3)].slice(0, 3);
   const dedup = [...new Map(recent.map(l => [l.id, l])).values()];
@@ -326,8 +419,7 @@ function renderProgression(container) {
   const total = window.LABS.length;
   const done = window.LABS.filter(l => isLabComplete(l.id)).length;
   const inProgress = window.LABS.filter(l => {
-    const p = getProgress(l.id);
-    return p.checked.length > 0 && !isLabComplete(l.id);
+    return getValidChecked(l, l.id).length > 0 && !isLabComplete(l.id);
   }).length;
   const favs = State.favorites.length;
   const globalPct = total ? Math.round((done / total) * 100) : 0;
@@ -381,6 +473,7 @@ function renderSidebar() {
   const catSection = sidebar.querySelector('.cat-filter-list');
   if (catSection) {
     catSection.innerHTML = '';
+    const catFragment = document.createDocumentFragment();
     Object.entries(window.CATEGORIES).forEach(([slug, cat]) => {
       const count = window.LABS.filter(l => l.categorie === slug).length;
       const item = document.createElement('label');
@@ -392,8 +485,9 @@ function renderSidebar() {
         <span class="filter-label">${cat.label}</span>
         <span class="filter-count">${count}</span>
       `;
-      catSection.appendChild(item);
+      catFragment.appendChild(item);
     });
+    catSection.appendChild(catFragment);
 
     catSection.querySelectorAll('.cat-checkbox').forEach(cb => {
       cb.addEventListener('change', () => {
@@ -408,14 +502,16 @@ function renderSidebar() {
   if (tagSection) {
     const allTags = [...new Set(window.LABS.flatMap(l => l.tags))].sort();
     tagSection.innerHTML = '';
+    const tagFragment = document.createDocumentFragment();
     allTags.forEach(tag => {
       const span = document.createElement('span');
       span.className = 'tag';
       span.textContent = tag;
       span.dataset.tag = tag;
       span.addEventListener('click', () => toggleTagFilter(tag, span));
-      tagSection.appendChild(span);
+      tagFragment.appendChild(span);
     });
+    tagSection.appendChild(tagFragment);
   }
 }
 
@@ -455,7 +551,7 @@ function getFilteredLabs() {
     labs = labs.filter(l =>
       l.titre.toLowerCase().includes(q) ||
       l.description.toLowerCase().includes(q) ||
-      l.tags.some(t => t.includes(q)) ||
+      l.tags.some(t => t.toLowerCase().includes(q)) ||
       l.etapes.some(e => e.titre.toLowerCase().includes(q) || e.contexte.toLowerCase().includes(q))
     );
   }
@@ -507,16 +603,33 @@ function renderLabsGrid() {
       <div style="font-size:0.9rem">Aucun lab ne correspond à ces filtres.</div>
     </div>`;
   } else {
-    labs.forEach((lab, i) => {
-      const card = renderLabCard(lab);
-      setTimeout(() => card.classList.add('visible'), i * 60);
-      grid.appendChild(card);
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // Un seul DocumentFragment pour n'imposer qu'un seul reflow au DOM,
+    // même quand la liste contient une centaine de labs.
+    const fragment = document.createDocumentFragment();
+    const cards = labs.map(lab => renderLabCard(lab));
+    cards.forEach(card => fragment.appendChild(card));
+    grid.appendChild(fragment);
+
+    // L'effet d'apparition en cascade est plafonné aux ~20 premières
+    // cartes : au-delà, l'attente cumulée devient perceptible sans
+    // apporter grand-chose visuellement.
+    const staggerLimit = 20;
+    cards.forEach((card, i) => {
+      if (reducedMotion) {
+        card.classList.add('visible');
+      } else if (i < staggerLimit) {
+        setTimeout(() => card.classList.add('visible'), i * 60);
+      } else {
+        card.classList.add('visible');
+      }
     });
   }
 
   if (countEl) {
     const active = State.filters.categories.length || State.filters.niveau ||
-      State.filters.source || State.filters.tags.length || State.searchQuery;
+      State.filters.source || State.filters.tags.length || State.searchQuery ||
+      State.filters.statut || State.filters.favoritesOnly;
     countEl.innerHTML = `<strong>${labs.length}</strong> lab${labs.length > 1 ? 's' : ''} trouvé${labs.length > 1 ? 's' : ''}`;
     if (active) {
       const reset = document.createElement('button');
@@ -580,7 +693,8 @@ function renderDetailPanel(lab, panel) {
   const cat = (window.CATEGORIES || {})[lab.categorie] || { couleur: '#F59E0B', icone: '📋', label: lab.categorie };
   const niveauEmoji = { 'débutant': '🟢', 'intermédiaire': '🟡', 'avancé': '🔴' }[lab.niveau] || '⚪';
   const p = getProgress(lab.id);
-  const allChecked = p.checked.length === lab.checklist.length;
+  const validChecked = getValidChecked(lab, lab.id);
+  const allChecked = validChecked.length === lab.checklist.length;
 
   panel.innerHTML = `
     <!-- Header sticky -->
@@ -592,7 +706,7 @@ function renderDetailPanel(lab, panel) {
       </div>
       <div class="detail-title-row">
         <span style="font-size:1.5rem">${cat.icone}</span>
-        <div class="detail-title">${lab.titre}</div>
+        <div class="detail-title">${escapeHtml(lab.titre)}</div>
       </div>
       <div class="detail-meta-row">
         <span class="lab-badge" style="--cat-color:${cat.couleur}">${cat.label}</span>
@@ -601,8 +715,8 @@ function renderDetailPanel(lab, panel) {
         <span class="meta-chip">📁 ${lab.source}</span>
         <span class="meta-chip">🗓 ${lab.date_ajout}</span>
       </div>
-      <button class="btn-complete ${allChecked ? 'enabled done' : (p.checked.length > 0 ? '' : '')}" id="btn-complete" 
-        ${allChecked ? '' : (p.checked.length === lab.checklist.length ? '' : 'disabled')}>
+      <button class="btn-complete ${allChecked ? 'enabled done' : (validChecked.length > 0 ? '' : '')}" id="btn-complete" 
+        ${allChecked ? '' : 'disabled'}>
         ${allChecked ? '✓ Lab terminé !' : '🔒 Compléter la checklist pour valider'}
       </button>
     </div>
@@ -614,7 +728,7 @@ function renderDetailPanel(lab, panel) {
       <div class="detail-section">
         <div class="detail-section-title">Objectifs</div>
         <ul class="objectifs-list">
-          ${lab.objectifs.map(o => `<li>${o}</li>`).join('')}
+          ${lab.objectifs.map(o => `<li>${escapeHtml(o)}</li>`).join('')}
         </ul>
       </div>
 
@@ -622,12 +736,16 @@ function renderDetailPanel(lab, panel) {
       <div class="detail-section">
         <div class="detail-section-title">Prérequis</div>
         <ul class="prereq-list">
-          ${lab.prerequis.map(p => `
+          ${lab.prerequis.map(p => {
+            const safeLien = typeof p.lien === 'string' && /^https?:\/\//i.test(p.lien) ? p.lien : null;
+            const nom = escapeHtml(p.nom || '');
+            return `
             <li class="prereq-item">
-              <span class="prereq-type">${p.type}</span>
-              <span class="prereq-name">${p.lien ? `<a href="${p.lien}" target="_blank" rel="noopener">${p.nom} ↗</a>` : p.nom}</span>
+              <span class="prereq-type">${escapeHtml(p.type || '')}</span>
+              <span class="prereq-name">${safeLien ? `<a href="${escapeHtml(safeLien)}" target="_blank" rel="noopener">${nom} ↗</a>` : nom}</span>
             </li>
-          `).join('')}
+          `;
+          }).join('')}
         </ul>
       </div>
 
@@ -652,13 +770,13 @@ function renderDetailPanel(lab, panel) {
           <div class="checklist-bar">
             <div class="checklist-fill" id="checklist-fill" style="width:${getProgressPct(lab.id)}%"></div>
           </div>
-          <div class="checklist-label" id="checklist-label">${p.checked.length}/${lab.checklist.length} points validés</div>
+          <div class="checklist-label" id="checklist-label">${validChecked.length}/${lab.checklist.length} points validés</div>
         </div>
         <ul class="checklist" id="checklist">
           ${lab.checklist.map((item, i) => `
-            <li class="check-item ${p.checked.includes(i) ? 'checked' : ''}" data-idx="${i}">
-              <div class="check-box">${p.checked.includes(i) ? '✓' : ''}</div>
-              <span class="check-text">${item}</span>
+            <li class="check-item ${validChecked.includes(item) ? 'checked' : ''}" data-idx="${i}">
+              <div class="check-box">${validChecked.includes(item) ? '✓' : ''}</div>
+              <span class="check-text">${escapeHtml(item)}</span>
             </li>
           `).join('')}
         </ul>
@@ -675,7 +793,7 @@ function renderDetailPanel(lab, panel) {
       <div class="detail-section">
         <div class="detail-section-title">Tags</div>
         <div class="tags-list">
-          ${lab.tags.map(t => `<span class="tag">${t}</span>`).join('')}
+          ${lab.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}
         </div>
       </div>
     </div>
@@ -741,7 +859,7 @@ function renderEtape(etape, i) {
       <div class="cmd-block">
         <div class="cmd-top">
           <span class="cmd-os-badge">${osLabel}</span>
-          <span class="cmd-comment">${c.commentaire}</span>
+          <span class="cmd-comment">${escapeHtml(c.commentaire)}</span>
           <button class="btn-copy" onclick="copyCmd(this)" data-cmd="${encodeURIComponent(c.cmd)}" aria-label="Copier la commande">
             Copier
           </button>
@@ -760,9 +878,9 @@ function renderEtape(etape, i) {
       <div class="errors-body">
         ${etape.erreurs_courantes.map(e => `
           <div class="error-item">
-            <div class="error-symptome">${e.symptome}</div>
-            <div class="error-cause">${e.cause}</div>
-            <div class="error-solution">${e.solution}</div>
+            <div class="error-symptome">${escapeHtml(e.symptome)}</div>
+            <div class="error-cause">${escapeHtml(e.cause)}</div>
+            <div class="error-solution">${escapeHtml(e.solution)}</div>
           </div>
         `).join('')}
       </div>
@@ -773,10 +891,10 @@ function renderEtape(etape, i) {
     <div class="step-block">
       <div class="step-header">
         <div class="step-num">${i + 1}</div>
-        <div class="step-title">${etape.titre}</div>
+        <div class="step-title">${escapeHtml(etape.titre)}</div>
       </div>
       <div class="step-body">
-        <div class="step-contexte">${etape.contexte}</div>
+        <div class="step-contexte">${escapeHtml(etape.contexte)}</div>
         ${cmds}
         ${errors}
       </div>
@@ -796,10 +914,10 @@ function renderDetailNav(lab) {
 
   navEl.innerHTML = `
     <button class="detail-nav-btn" ${!prev ? 'disabled' : ''} onclick="openLab(${prev?.id})">
-      ← ${prev ? prev.titre.substring(0, 40) + (prev.titre.length > 40 ? '…' : '') : 'Premier lab'}
+      ← ${prev ? escapeHtml(prev.titre.substring(0, 40) + (prev.titre.length > 40 ? '…' : '')) : 'Premier lab'}
     </button>
     <button class="detail-nav-btn" ${!next ? 'disabled' : ''} onclick="openLab(${next?.id})">
-      ${next ? next.titre.substring(0, 40) + (next.titre.length > 40 ? '…' : '') : 'Dernier lab'} →
+      ${next ? escapeHtml(next.titre.substring(0, 40) + (next.titre.length > 40 ? '…' : '')) : 'Dernier lab'} →
     </button>
   `;
 }
@@ -812,11 +930,12 @@ function initChecklist(lab, panel) {
   items.forEach(item => {
     item.addEventListener('click', () => {
       const idx = parseInt(item.dataset.idx);
+      const text = lab.checklist[idx];
       const p = getProgress(lab.id);
-      const cidx = p.checked.indexOf(idx);
+      const cidx = p.checked.indexOf(text);
 
       if (cidx === -1) {
-        p.checked.push(idx);
+        p.checked.push(text);
         item.classList.add('checked');
         item.querySelector('.check-box').textContent = '✓';
       } else {
@@ -833,9 +952,8 @@ function initChecklist(lab, panel) {
 }
 
 function updateChecklistProgress(lab, panel) {
-  const p = getProgress(lab.id);
   const total = lab.checklist.length;
-  const done = p.checked.length;
+  const done = getValidChecked(lab, lab.id).length;
   const pct = total ? Math.round((done / total) * 100) : 0;
 
   const fill = panel.querySelector('#checklist-fill');
@@ -847,16 +965,18 @@ function updateChecklistProgress(lab, panel) {
 function updateCompleteBtn(lab) {
   const btn = document.getElementById('btn-complete');
   if (!btn) return;
-  const p = getProgress(lab.id);
-  const allDone = p.checked.length === lab.checklist.length;
+  const done = getValidChecked(lab, lab.id).length;
+  const allDone = done === lab.checklist.length;
 
   if (allDone) {
     btn.classList.add('enabled', 'done');
+    btn.disabled = false;
     btn.textContent = '✓ Lab terminé !';
     btn.onclick = () => celebrateLab(lab.id);
   } else {
     btn.classList.remove('enabled', 'done');
-    btn.textContent = `🔒 ${p.checked.length}/${lab.checklist.length} — complète la checklist`;
+    btn.disabled = true;
+    btn.textContent = `🔒 ${done}/${lab.checklist.length} — complète la checklist`;
   }
 }
 
@@ -973,7 +1093,7 @@ function renderSearchResults(query) {
   const matches = window.LABS.filter(l =>
     l.titre.toLowerCase().includes(q) ||
     l.description.toLowerCase().includes(q) ||
-    l.tags.some(t => t.includes(q)) ||
+    l.tags.some(t => t.toLowerCase().includes(q)) ||
     (l.etapes || []).some(e =>
       e.titre.toLowerCase().includes(q) ||
       (e.contexte || '').toLowerCase().includes(q) ||
@@ -995,8 +1115,8 @@ function renderSearchResults(query) {
       <div class="search-result-item" onclick="handleSearchSelect(${lab.id})">
         <span class="search-result-icon">${cat.icone || '📋'}</span>
         <div>
-          <div class="search-result-title">${lab.titre}</div>
-          <div class="search-result-sub">${cat.label || lab.categorie} · ${lab.niveau} · ${lab.duree} min</div>
+          <div class="search-result-title">${escapeHtml(lab.titre)}</div>
+          <div class="search-result-sub">${escapeHtml(cat.label || lab.categorie)} · ${escapeHtml(lab.niveau)} · ${lab.duree} min</div>
         </div>
       </div>
     `;
@@ -1049,19 +1169,71 @@ function exportProgress() {
   showToast('📥 Progression exportée !');
 }
 
+/* Valide et normalise un lab importé : garantit la présence de tous les
+   tableaux/objets attendus par le renderer (évite un crash si le JSON
+   importé est partiel), sans jamais faire confiance au contenu. */
+function normalizeImportedLab(raw, newId) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (typeof raw.titre !== 'string' || !raw.titre.trim()) return null;
+
+  return {
+    id: newId,
+    titre: String(raw.titre),
+    categorie: typeof raw.categorie === 'string' ? raw.categorie : 'projets',
+    niveau: ['débutant', 'intermédiaire', 'avancé'].includes(raw.niveau) ? raw.niveau : 'débutant',
+    duree: Number.isFinite(raw.duree) ? raw.duree : 0,
+    source: typeof raw.source === 'string' ? raw.source : 'Personnel',
+    date_ajout: typeof raw.date_ajout === 'string' ? raw.date_ajout : new Date().toISOString().split('T')[0],
+    description: typeof raw.description === 'string' ? raw.description : '',
+    objectifs: Array.isArray(raw.objectifs) ? raw.objectifs.map(String) : [],
+    prerequis: Array.isArray(raw.prerequis) ? raw.prerequis : [],
+    schema_reseau: '', // on n'importe jamais de HTML/SVG brut d'un fichier externe
+    etapes: Array.isArray(raw.etapes) ? raw.etapes.map(et => ({
+      titre: typeof et.titre === 'string' ? et.titre : '',
+      contexte: typeof et.contexte === 'string' ? et.contexte : '',
+      commandes: Array.isArray(et.commandes) ? et.commandes.map(c => ({
+        os: c.os,
+        commentaire: typeof c.commentaire === 'string' ? c.commentaire : '',
+        cmd: typeof c.cmd === 'string' ? c.cmd : ''
+      })) : [],
+      erreurs_courantes: Array.isArray(et.erreurs_courantes) ? et.erreurs_courantes : []
+    })) : [],
+    checklist: Array.isArray(raw.checklist) ? raw.checklist.map(String) : [],
+    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : []
+  };
+}
+
 function importLabs(file) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = e => {
     try {
       const data = JSON.parse(e.target.result);
-      if (Array.isArray(data)) {
-        window.LABS = [...(window.LABS || []), ...data];
-        renderLabsGrid?.();
-        showToast(`✅ ${data.length} lab(s) importé(s) !`);
-      } else {
-        showToast('❌ Format JSON invalide', '#EF4444');
+      if (!Array.isArray(data)) {
+        showToast('❌ Format JSON invalide (un tableau de labs est attendu)', '#EF4444');
+        return;
       }
+
+      let nextId = Math.max(0, ...(window.LABS || []).map(l => l.id)) + 1;
+      const normalized = data
+        .map(raw => normalizeImportedLab(raw, nextId++))
+        .filter(Boolean);
+
+      if (!normalized.length) {
+        showToast('❌ Aucun lab valide dans ce fichier', '#EF4444');
+        return;
+      }
+
+      // Fusion + persistance (contrairement à avant, les labs importés
+      // survivent désormais à un rechargement de la page).
+      const existingImported = safeGetJSON('tp-imported-labs', []);
+      const allImported = [...existingImported, ...normalized];
+      safeSetJSON('tp-imported-labs', allImported);
+
+      window.LABS = [...(window.LABS || []), ...normalized];
+      renderLabsGrid?.();
+      renderSidebar?.();
+      showToast(`✅ ${normalized.length} lab(s) importé(s) et sauvegardé(s) !`);
     } catch {
       showToast('❌ Erreur de lecture du fichier', '#EF4444');
     }
@@ -1078,6 +1250,16 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/* Limite la fréquence d'appel d'une fonction coûteuse (ex: redessiner
+   toute la grille de labs) pendant une saisie clavier rapide. */
+function debounce(fn, delay = 150) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), delay);
+  };
 }
 
 /* ─────────────────────────────────────────
@@ -1197,10 +1379,12 @@ function initLabs() {
 
   const searchInp = document.getElementById('search-input-overlay');
   if (searchInp) {
+    const debouncedGridRefresh = debounce(() => renderLabsGrid(), 180);
     searchInp.addEventListener('input', e => {
       State.searchQuery = e.target.value;
       State.searchActiveIdx = -1;
-      renderSearchResults(e.target.value);
+      renderSearchResults(e.target.value); // retour visuel immédiat dans l'overlay
+      debouncedGridRefresh(); // le re-rendu complet de la grille (plus coûteux) est différé
     });
     searchInp.addEventListener('keydown', handleSearchKeydown);
   }
