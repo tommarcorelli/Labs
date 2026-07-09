@@ -1207,6 +1207,14 @@ a:hover { text-decoration: underline; }
 .btn-complete.enabled:hover { background: var(--accent-light); transform: translateY(-1px); }
 .btn-complete.done { background: #10B981; color: white; }
 
+.completion-date {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 8px;
+  min-height: 1em;
+}
+
 .detail-body { padding: 28px; }
 
 /* Sections dans le détail */

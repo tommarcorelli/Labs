@@ -265,8 +265,30 @@ function isLabComplete(labId) {
 }
 
 function saveProgress(labId, checked) {
-  State.progress[labId] = { checked };
+  const lab = (window.LABS || []).find(l => l.id === labId);
+  const prev = State.progress[labId] || {};
+  const entry = { checked };
+
+  if (lab) {
+    const validCount = checked.filter(c => lab.checklist.includes(c)).length;
+    const complete = lab.checklist.length > 0 && validCount === lab.checklist.length;
+    // On garde la première date de complétion atteinte ; si le lab redevient
+    // incomplet (décoché), on efface la date pour rester cohérent avec le badge affiché.
+    if (complete) entry.completedAt = prev.completedAt || new Date().toISOString();
+  } else if (prev.completedAt) {
+    entry.completedAt = prev.completedAt;
+  }
+
+  State.progress[labId] = entry;
   safeSetJSON('tp-progress', State.progress);
+}
+
+function getCompletionDate(labId) {
+  const p = State.progress[labId];
+  if (!p || !p.completedAt) return null;
+  const d = new Date(p.completedAt);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function getValidChecked(lab, labId) {
@@ -339,7 +361,7 @@ function renderLabCard(lab) {
     <div class="lab-card-header">
       <span class="lab-badge" style="--cat-color:${cat.couleur}">${cat.icone} ${cat.label}</span>
       <div class="lab-card-header-right">
-        ${complete ? '<span class="badge-done">✓ Terminé</span>' : (inProgress ? '<span class="badge-progress">◐ En cours</span>' : '')}
+        ${complete ? `<span class="badge-done" ${getCompletionDate(lab.id) ? `title="Terminé le ${getCompletionDate(lab.id)}"` : ''}>✓ Terminé</span>` : (inProgress ? '<span class="badge-progress">◐ En cours</span>' : '')}
         <button class="btn-fav ${fav ? 'active' : ''}" aria-label="${fav ? 'Retirer des favoris' : 'Ajouter aux favoris'}" title="Favori">${fav ? '★' : '☆'}</button>
       </div>
     </div>
@@ -373,6 +395,7 @@ function renderLabCard(lab) {
     btn.textContent = added ? '★' : '☆';
     btn.setAttribute('aria-label', added ? 'Retirer des favoris' : 'Ajouter aux favoris');
     if (!added && State.filters.favoritesOnly) renderLabsGrid();
+    renderFavGrid(document.getElementById('fav-grid'), document.getElementById('fav-section'));
   });
   card.querySelectorAll('.tag').forEach(tagEl => {
     tagEl.addEventListener('click', e => {
@@ -406,6 +429,22 @@ function renderRecentLabs(container) {
   dedup.forEach(lab => {
     container.appendChild(renderLabCard(lab));
   });
+}
+
+/* ─────────────────────────────────────────
+   RENDER : FAVORIS (accueil)
+───────────────────────────────────────── */
+function renderFavGrid(container, section) {
+  if (!container || !window.LABS) return;
+  container.innerHTML = '';
+
+  const favs = window.LABS.filter(l => isFavorite(l.id));
+  if (section) section.style.display = favs.length ? '' : 'none';
+  if (!favs.length) return;
+
+  const fragment = document.createDocumentFragment();
+  favs.slice(0, 3).forEach(lab => fragment.appendChild(renderLabCard(lab)));
+  container.appendChild(fragment);
 }
 
 /* ─────────────────────────────────────────
@@ -513,6 +552,48 @@ function renderSidebar() {
     });
     tagSection.appendChild(tagFragment);
   }
+
+  renderImportedList();
+}
+
+/* Liste des labs importés (persistés en localStorage) avec suppression
+   individuelle, pour pouvoir revenir en arrière après un import. */
+function renderImportedList() {
+  const section = document.getElementById('imported-section');
+  const list = document.getElementById('imported-list');
+  if (!section || !list) return;
+
+  const imported = safeGetJSON('tp-imported-labs', []);
+  section.style.display = imported.length ? '' : 'none';
+  list.innerHTML = '';
+  if (!imported.length) return;
+
+  const fragment = document.createDocumentFragment();
+  imported.forEach(lab => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:0.82rem;color:var(--text-secondary)';
+    const label = document.createElement('span');
+    label.textContent = lab.titre;
+    label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const del = document.createElement('button');
+    del.textContent = '🗑';
+    del.title = `Supprimer "${lab.titre}"`;
+    del.setAttribute('aria-label', `Supprimer le lab importé ${lab.titre}`);
+    del.style.cssText = 'background:none;border:none;cursor:pointer;flex-shrink:0;font-size:0.9rem';
+    del.addEventListener('click', () => deleteImportedLab(lab.id));
+    row.append(label, del);
+    fragment.appendChild(row);
+  });
+  list.appendChild(fragment);
+}
+
+function deleteImportedLab(id) {
+  const remaining = safeGetJSON('tp-imported-labs', []).filter(l => l.id !== id);
+  safeSetJSON('tp-imported-labs', remaining);
+  window.LABS = (window.LABS || []).filter(l => l.id !== id);
+  renderImportedList();
+  renderLabsGrid?.();
+  showToast('🗑 Lab importé supprimé');
 }
 
 function toggleTagFilter(tag, el) {
@@ -719,6 +800,7 @@ function renderDetailPanel(lab, panel) {
         ${allChecked ? '' : 'disabled'}>
         ${allChecked ? '✓ Lab terminé !' : '🔒 Compléter la checklist pour valider'}
       </button>
+      ${allChecked && getCompletionDate(lab.id) ? `<div class="completion-date" id="completion-date">🗓 Terminé le ${getCompletionDate(lab.id)}</div>` : '<div class="completion-date" id="completion-date"></div>'}
     </div>
 
     <!-- Corps -->
@@ -737,12 +819,22 @@ function renderDetailPanel(lab, panel) {
         <div class="detail-section-title">Prérequis</div>
         <ul class="prereq-list">
           ${lab.prerequis.map(p => {
-            const safeLien = typeof p.lien === 'string' && /^https?:\/\//i.test(p.lien) ? p.lien : null;
             const nom = escapeHtml(p.nom || '');
+            const linkedLab = Number.isFinite(p.lab_id) ? window.LABS.find(l => l.id === p.lab_id) : null;
+            const safeLien = !linkedLab && typeof p.lien === 'string' && /^https?:\/\//i.test(p.lien) ? p.lien : null;
+
+            let content = nom;
+            if (linkedLab) {
+              // Lien interne : ouvre l'autre lab directement dans le panneau détail (SPA)
+              content = `<a href="#" onclick="event.preventDefault(); openLab(${linkedLab.id})">${escapeHtml(linkedLab.titre)} 🔗</a>`;
+            } else if (safeLien) {
+              content = `<a href="${escapeHtml(safeLien)}" target="_blank" rel="noopener">${nom} ↗</a>`;
+            }
+
             return `
             <li class="prereq-item">
               <span class="prereq-type">${escapeHtml(p.type || '')}</span>
-              <span class="prereq-name">${safeLien ? `<a href="${escapeHtml(safeLien)}" target="_blank" rel="noopener">${nom} ↗</a>` : nom}</span>
+              <span class="prereq-name">${content}</span>
             </li>
           `;
           }).join('')}
@@ -846,6 +938,7 @@ function toggleFavoriteDetail(id, btn) {
     card.classList.toggle('active', added);
     card.textContent = added ? '★' : '☆';
   }
+  renderFavGrid(document.getElementById('fav-grid'), document.getElementById('fav-section'));
 }
 
 function printLab() {
@@ -967,16 +1060,22 @@ function updateCompleteBtn(lab) {
   if (!btn) return;
   const done = getValidChecked(lab, lab.id).length;
   const allDone = done === lab.checklist.length;
+  const dateEl = document.getElementById('completion-date');
 
   if (allDone) {
     btn.classList.add('enabled', 'done');
     btn.disabled = false;
     btn.textContent = '✓ Lab terminé !';
     btn.onclick = () => celebrateLab(lab.id);
+    if (dateEl) {
+      const d = getCompletionDate(lab.id);
+      dateEl.textContent = d ? `🗓 Terminé le ${d}` : '';
+    }
   } else {
     btn.classList.remove('enabled', 'done');
     btn.disabled = true;
     btn.textContent = `🔒 ${done}/${lab.checklist.length} — complète la checklist`;
+    if (dateEl) dateEl.textContent = '';
   }
 }
 
@@ -1176,10 +1275,14 @@ function normalizeImportedLab(raw, newId) {
   if (!raw || typeof raw !== 'object') return null;
   if (typeof raw.titre !== 'string' || !raw.titre.trim()) return null;
 
+  const knownCategories = Object.keys(window.CATEGORIES || {});
+  const categorieInconnue = typeof raw.categorie !== 'string' || !knownCategories.includes(raw.categorie);
+
   return {
     id: newId,
     titre: String(raw.titre),
-    categorie: typeof raw.categorie === 'string' ? raw.categorie : 'projets',
+    categorie: categorieInconnue ? 'projets' : raw.categorie,
+    _categorieInconnue: categorieInconnue ? (raw.categorie || '(non précisée)') : null,
     niveau: ['débutant', 'intermédiaire', 'avancé'].includes(raw.niveau) ? raw.niveau : 'débutant',
     duree: Number.isFinite(raw.duree) ? raw.duree : 0,
     source: typeof raw.source === 'string' ? raw.source : 'Personnel',
@@ -1233,7 +1336,15 @@ function importLabs(file) {
       window.LABS = [...(window.LABS || []), ...normalized];
       renderLabsGrid?.();
       renderSidebar?.();
+
+      const inconnues = normalized.filter(l => l._categorieInconnue);
       showToast(`✅ ${normalized.length} lab(s) importé(s) et sauvegardé(s) !`);
+      if (inconnues.length) {
+        const liste = [...new Set(inconnues.map(l => l._categorieInconnue))].join(', ');
+        setTimeout(() => {
+          showToast(`⚠️ Catégorie inconnue (${liste}) → repliée sur "Projets" pour ${inconnues.length} lab(s)`, '#F59E0B');
+        }, 2200);
+      }
     } catch {
       showToast('❌ Erreur de lecture du fichier', '#EF4444');
     }
@@ -1284,6 +1395,7 @@ function initIndex() {
 
   // Labs récents
   renderRecentLabs(document.getElementById('recent-grid'));
+  renderFavGrid(document.getElementById('fav-grid'), document.getElementById('fav-section'));
 
   // Progression
   renderProgression(document.getElementById('prog-list'));
@@ -1335,6 +1447,12 @@ function initLabs() {
   }
   if (params.get('tag')) {
     State.filters.tags = [params.get('tag')];
+    renderLabsGrid();
+  }
+  if (params.get('fav')) {
+    State.filters.favoritesOnly = true;
+    const favCb = document.getElementById('fav-toggle');
+    if (favCb) favCb.checked = true;
     renderLabsGrid();
   }
   if (params.get('open')) {
